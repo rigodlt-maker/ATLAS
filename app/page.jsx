@@ -1,116 +1,116 @@
 import Link from "next/link";
-import { getPool } from "../lib/db";
-import { searchNodes, listAllNodes } from "../lib/atlas-data";
+import { notFound } from "next/navigation";
+import { getNodeBySlug, formatValue, statusColor, certaintyLabel } from "../../../lib/atlas-data";
 
-async function getStatus() {
-  try {
-    const pool = getPool();
-    const check = await pool.query(`SELECT to_regclass('public.nodes') IS NOT NULL AS ok`);
-    return { connected: true, ready: check.rows[0].ok };
-  } catch (err) {
-    return { connected: false, error: err.message };
-  }
+function formatTimeSpan(ts) {
+  if (!ts) return null;
+  const fmt = (y) => (y < 0 ? `${-y} a.C.` : `${y} d.C.`);
+  if (ts.start_year === ts.end_year) return `${fmt(ts.start_year)} (${ts.precision})`;
+  return `${fmt(ts.start_year)} — ${ts.end_year != null ? fmt(ts.end_year) : "presente"} (${ts.precision})`;
 }
 
-export default async function Home({ searchParams }) {
-  const params = await searchParams;
-  const q = (params?.q || "").trim();
+export default async function NodePage({ params }) {
+  const { slug } = await params;
+  const node = await getNodeBySlug(slug);
+  if (!node) notFound();
 
-  const status = await getStatus();
-
-  let nodes = [];
-  let error = null;
-  if (status.connected && status.ready) {
-    try {
-      nodes = q ? await searchNodes(q) : await listAllNodes();
-    } catch (err) {
-      error = err.message;
-    }
+  // Agrupar claims por campo — así conviven visiones en disputa del mismo dato
+  // (v3 §5.2: certainty y claim_status son ejes distintos, nunca se ocultan).
+  const claimsByField = {};
+  for (const c of node.claims) {
+    if (!claimsByField[c.field]) claimsByField[c.field] = [];
+    claimsByField[c.field].push(c);
   }
 
   return (
     <main style={{ maxWidth: 680, margin: "40px auto", padding: "0 20px" }}>
-      <h1 style={{ marginBottom: 4 }}>ATLAS</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>
-        Explorar el pasado para comprender cómo llegamos hasta aquí.
+      <Link href="/" style={{ fontSize: 14, color: "#666", textDecoration: "none" }}>
+        &larr; Volver a ATLAS
+      </Link>
+
+      <h1 style={{ margin: "12px 0 4px 0" }}>{node.name}</h1>
+      <p style={{ margin: "0 0 4px 0", color: "#888", fontSize: 13, textTransform: "uppercase" }}>
+        {node.node_kind} · {node.type}
       </p>
-
-      <form action="/" method="GET" style={{ marginBottom: 24 }}>
-        <input
-          type="text"
-          name="q"
-          defaultValue={q}
-          placeholder="Buscar persona, lugar, evento..."
-          style={{
-            width: "100%",
-            padding: "10px 14px",
-            fontSize: 16,
-            borderRadius: 8,
-            border: "1px solid #ccc",
-            boxSizing: "border-box",
-          }}
-        />
-      </form>
-
-      {!status.connected && (
-        <div style={{ padding: 20, borderRadius: 12, background: "#fdecea", border: "1px solid #f5c2c0" }}>
-          <strong>⚠️ No se pudo conectar a la base de datos</strong>
-          <p style={{ fontSize: 14, color: "#900" }}>{status.error}</p>
-        </div>
+      {node.timeSpan && (
+        <p style={{ margin: "0 0 20px 0", color: "#555", fontSize: 14 }}>{formatTimeSpan(node.timeSpan)}</p>
       )}
 
-      {status.connected && !status.ready && (
-        <div style={{ padding: 20, borderRadius: 12, background: "#fff8e6", border: "1px solid #f0d98c" }}>
-          <strong>⏳ Conectado, pero las tablas todavía no existen</strong>
-        </div>
-      )}
-
-      {error && (
-        <div style={{ padding: 20, borderRadius: 12, background: "#fdecea", border: "1px solid #f5c2c0" }}>
-          <strong>⚠️ Error al consultar</strong>
-          <p style={{ fontSize: 14, color: "#900" }}>{error}</p>
-        </div>
-      )}
-
-      {status.connected && status.ready && !error && (
-        <>
-          <p style={{ color: "#666" }}>
-            {q ? `${nodes.length} resultado(s) para "${q}"` : `${nodes.length} nodo(s) en ATLAS`}
-          </p>
-
-          {nodes.length === 0 && q && (
-            <p style={{ color: "#888" }}>Sin resultados. Prueba con otro término.</p>
-          )}
-
-          {nodes.length === 0 && !q && (
-            <div style={{ padding: 20, borderRadius: 12, background: "#eefbf1", border: "1px solid #b7e4c7" }}>
-              <strong>✅ Conectado — base de datos vacía</strong>
-            </div>
-          )}
-
-          <div>
-            {nodes.map((n) => (
-              <Link
-                key={n.id}
-                href={`/nodo/${n.slug}`}
-                style={{
-                  display: "block",
-                  padding: "14px 16px",
-                  marginBottom: 8,
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  textDecoration: "none",
-                  color: "inherit",
-                }}
-              >
-                <strong>{n.name}</strong>
-                <div style={{ fontSize: 12, color: "#888", textTransform: "uppercase" }}>
-                  {n.node_kind} · {n.type}
+      {Object.keys(claimsByField).length > 0 && (
+        <section style={{ marginBottom: 28 }}>
+          <h2 style={{ fontSize: 16, color: "#333", borderBottom: "1px solid #eee", paddingBottom: 6 }}>
+            Lo que sabemos
+          </h2>
+          {Object.entries(claimsByField).map(([field, claims]) => (
+            <div key={field} style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: "#999", textTransform: "uppercase", marginBottom: 4 }}>
+                {field}
+                {claims.length > 1 && (
+                  <span style={{ marginLeft: 8, color: "#b8860b", fontWeight: 600 }}>
+                    ({claims.length} interpretaciones)
+                  </span>
+                )}
+              </div>
+              {claims.map((c) => (
+                <div
+                  key={c.id}
+                  style={{
+                    padding: "10px 14px",
+                    marginBottom: 6,
+                    borderRadius: 8,
+                    border: "1px solid #eee",
+                    background: "#fafafa",
+                  }}
+                >
+                  <div style={{ fontSize: 15 }}>
+                    {c.refSlug ? <Link href={`/nodo/${c.refSlug}`}>{c.refName}</Link> : formatValue(c.value)}
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 4, color: "#666" }}>
+                    {certaintyLabel[c.certainty] || c.certainty}
+                    {" · "}
+                    <span style={{ color: statusColor[c.claim_status] || "#555", fontWeight: 600 }}>
+                      {c.claim_status}
+                    </span>
+                  </div>
+                  {c.note && (
+                    <div style={{ fontSize: 13, marginTop: 6, color: "#555", fontStyle: "italic" }}>{c.note}</div>
+                  )}
+                  {c.sources.length > 0 && (
+                    <div style={{ fontSize: 12, marginTop: 6, color: "#888" }}>
+                      Fuentes: {c.sources.map((s) => s.title).join(", ")}
+                    </div>
+                  )}
                 </div>
-              </Link>
-            ))}
-          </div>
-        </>
+              ))}
+            </div>
+          ))}
+        </section>
+      )}
+
+      {(node.outgoing.length > 0 || node.incoming.length > 0) && (
+        <section>
+          <h2 style={{ fontSize: 16, color: "#333", borderBottom: "1px solid #eee", paddingBottom: 6 }}>
+            Conexiones
+          </h2>
+          {node.outgoing.map((e, i) => (
+            <div key={"o" + i} style={{ fontSize: 14, margin: "8px 0" }}>
+              →{" "}
+              <strong>
+                {e.relation_type}/{e.relation_subtype}
+              </strong>{" "}
+              {e.targetSlug ? <Link href={`/nodo/${e.targetSlug}`}>{e.targetName}</Link> : e.targetName}
+            </div>
+          ))}
+          {node.incoming.map((e, i) => (
+            <div key={"i" + i} style={{ fontSize: 14, margin: "8px 0" }}>
+              {e.sourceSlug ? <Link href={`/nodo/${e.sourceSlug}`}>{e.sourceName}</Link> : e.sourceName}{" "}
+              <strong>
+                {e.relation_type}/{e.relation_subtype}
+              </strong>{" "}
+              ←
+            </div>
+          ))}
+        </section>
       )}
     </main>
   );
